@@ -13,6 +13,8 @@ END=
 TESTS_C= \
 	   test01.c \
 	   test02.c \
+	   test03.c \
+	   test04.c \
 	   $(END)
 
 all: $(TESTS_C) $(TESTS_CXX)

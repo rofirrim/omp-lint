@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cassert>
 #include <set>
+#include <map>
 #include <utility>
 #include <algorithm>
 #include <iterator>
@@ -113,18 +114,28 @@ void omp_lint::warn_captured_dependences(function *fun)
 void omp_lint::process_omp_task_clauses(tree clauses)
 {
     std::set<tree> privated_vars;
+    std::set<tree> firstprivated_vars;
     std::set<tree> dependent_vars;
+    std::map<tree, location_t> dependent_vars_loc;
 
     for (tree it = clauses; it != NULL; it = OMP_CLAUSE_CHAIN(it))
     {
         switch (OMP_CLAUSE_CODE(it))
         {
-            case OMP_CLAUSE_FIRSTPRIVATE:
             case OMP_CLAUSE_PRIVATE:
                 {
                     tree decl = OMP_CLAUSE_DECL(it);
-                    gcc_assert(TREE_CODE(decl) == VAR_DECL);
+                    gcc_assert(TREE_CODE(decl) == VAR_DECL
+                            || TREE_CODE(decl) == PARM_DECL);
                     privated_vars.insert(decl);
+                    break;
+                }
+            case OMP_CLAUSE_FIRSTPRIVATE:
+                {
+                    tree decl = OMP_CLAUSE_DECL(it);
+                    gcc_assert(TREE_CODE(decl) == VAR_DECL
+                            || TREE_CODE(decl) == PARM_DECL);
+                    firstprivated_vars.insert(decl);
                     break;
                 }
             case OMP_CLAUSE_DEPEND:
@@ -134,9 +145,11 @@ void omp_lint::process_omp_task_clauses(tree clauses)
                     if (TREE_CODE(dep_expr) == ADDR_EXPR)
                     {
                         tree referenced = TREE_OPERAND(dep_expr, 0);
-                        if (TREE_CODE(referenced) == VAR_DECL)
+                        if (TREE_CODE(referenced) == VAR_DECL
+                                || TREE_CODE(referenced) == PARM_DECL)
                         {
                             dependent_vars.insert(referenced);
+                            dependent_vars_loc[referenced] = OMP_CLAUSE_LOCATION(it);
                         }
                         else
                         {
@@ -156,12 +169,29 @@ void omp_lint::process_omp_task_clauses(tree clauses)
             privated_vars.begin(), privated_vars.end(),
             dependent_vars.begin(), dependent_vars.end(),
             std::inserter(privated_deps, privated_deps.begin()));
-
     for (auto &var_decl: privated_deps)
     {
-        fprintf(stderr, "PRIVATED DEPS\n");
-        print_generic_decl(stderr, var_decl, 0);
-        fprintf(stderr, "\n");
+        warning_at(dependent_vars_loc[var_decl], 0,
+                "variable %qD appears in a dependence but it has a private data-sharing", var_decl);
+        inform(dependent_vars_loc[var_decl],
+                "the task will be scheduled according to the dependence of %qD "
+                "but the task will use an uninitialized private copy",
+                var_decl);
+    }
+
+    privated_deps.clear();
+    std::set_intersection(
+            firstprivated_vars.begin(), firstprivated_vars.end(),
+            dependent_vars.begin(), dependent_vars.end(),
+            std::inserter(privated_deps, privated_deps.begin()));
+    for (auto &var_decl: privated_deps)
+    {
+        warning_at(dependent_vars_loc[var_decl], 0,
+                "variable %qD appears in a dependence but has a firstprivate data-sharing", var_decl);
+        inform(dependent_vars_loc[var_decl],
+                "the task will be scheduled according to the dependence of %qD "
+                "but the task will use a private copy initialized with the value that %qD had when the task was created",
+                var_decl, var_decl);
     }
 }
 
